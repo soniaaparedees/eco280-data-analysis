@@ -4,5 +4,5 @@ In this project, I used US household demographic characteristics from the 2019 A
 
 # Running the analysis
 
-Please run `import.rmd` to import data. Then run `data_analysis.Rmd` for the analysis.
+Please run `import.Rmd` to import data. Then run `data_analysis.Rmd` for the analysis.
 
