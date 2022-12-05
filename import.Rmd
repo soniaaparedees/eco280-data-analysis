@@ -1,0 +1,45 @@
+---
+title: "import_code"
+author: "Sonia Paredes"
+date: "12/6/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+```
+
+# Import code to download American Housing Survey data and CBSA map data all from the Census Bureau initially accessed on 2021-12-06.
+
+# Mapping and data cleaning is in main.Rmd
+
+```{r import data}
+# Creating file directories for data
+if (!dir.exists("data")) {
+  dir.create("data")
+}
+
+if (!dir.exists("map_data")) {
+  dir.create("map_data")
+}
+
+# AHS 2019 from Census
+download.file(url = "https://www2.census.gov/programs-surveys/ahs/2019/AHS%202019%20National%20PUF%20v1.1%20CSV.zip", destfile = "data/ahs2019national.zip")
+   
+unzip("data/ahs2019national.zip", exdir = "data")
+   
+household <- read.csv("data/household.csv")
+mortgage <- read.csv("data/mortgage.csv")
+person <- read.csv("data/person.csv")
+project <- read.csv("data/project.csv")
+
+
+# I'm thinking of mapping statistics maybe by CBSA codes or census division specified in the household dataset, I found CBSA shape files, but also there seems to be R packages that have CBSA map data
+download.file(url = "https://www2.census.gov/geo/tiger/TIGER2021/CBSA/tl_2021_us_cbsa.zip",
+              destfile = "map_data/cbsa2021.zip")
+
+unzip("map_data/cbsa2021.zip", exdir = "map_data")
+
+```
+

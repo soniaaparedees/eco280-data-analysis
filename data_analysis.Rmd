@@ -1,0 +1,317 @@
+---
+title: "Data Analysis"
+author: "Sonia Paredes"
+date: "12/8/2021"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(tmap)
+library(sf)
+library(maps)
+library(modelsummary)
+library(scales)  #https://www.geeksforgeeks.org/change-formatting-of-numbers-of-ggplot2-plot-axis-in-r/
+library(estimatr)
+library(vtable)
+library(Stat2Data)
+library(fastDummies)
+```
+
+# Introduction
+In this project, I used US household demographic characteristics from the 2019 American Housing Survey Public Use File (PUF) to explore their relationships with homeownership. I recently read about the US homeowners’ landscape for another project. Upon learning about recent trends of low millennial homeownership, I couldn’t help but wonder what the underlying reasons were. 
+
+For the analysis, I first examined different tenure shares by different groups: geographic division, race, age, and income to identify any prominent trends. From maps and bar chart visualizations, I noticed that homeownership rates tend to be higher inland than on the outer regions. Black and Hawaiian/Pacific Islanders have lower home ownership rates versus other groups. Lastly, age and income display positive trends with homeownership. After further exploring the different available characteristics and information, I added years of education to my selected variables. I was particularly intrigued with income and thus set it as my main predictor. I regressed log of income, while controlling for age, race, education, and geographic division, I set up a logistic linear regression to predict the probability of owning a home. 
+
+The regression shows that a 1% increase in income increases the odds of homeownership by a factor of 1.0076, controlling for race, age, having higher education, and division.
+
+```{r import data}
+household <- read.csv("data/household.csv")
+
+# CENSUS divisions shape files
+division <- st_read("map_data/cb_2018_us_division_20m.shp") 
+state <- st_read("https://opendata.arcgis.com/datasets/1b02c87f62d24508970dc1a6df80c98e_0.geojson") 
+```
+
+# Data
+The American Housing Survey is conducted biennially by the U.S. Census Bureau. The Census Bureau gathers data from the same housing units every other year until a new sample is drawn. The survey is carried out through in-person visits to the housing unit or over telephone.  The interviewer then interviews the occupying household for occupied units and the landlords, neighbors, or rental agents for unoccupied units. (This is stored as INTSTATUS in the dataset.) The survey is meant to result in a random sample from all residential housing units in the 50 states and D.C. allowing users to draw estimates from the data. 
+
+The original PUF contains information on 63,185 unique households with 1088 different variables pertaining to various household, homeowner, and housing unit characteristics. Moreover, the PUF also contains information on each person surveyed, mortgages, and projects. Since I am investigating total household characteristics as a predictor for household homeownership, I only extracted variables from the household dataset. 
+
+Apart from identifier `CONTROL` and interview indicator `INTSTATUS`, I chose homeowner characteristics that I believe would be important to my exploration. `HHAGE` is age of a householder in years. `HHRACE` has 20 different types, to which I recoded all multiracial identities into one broader mutliracial category. `HHGRAD` is an educational attainment indicator which I recoded to a highschool, higher education, and college grad dummy. `HINCP` is combined annual household income. `DIVISION` is a geographic indicator of US Census Division (9 diff. divisions). `FISRTHOME` is an indicator if the household lives in their first home. `WEIGHT` is a weighting variable used for estimates and calculations. ``FIRSTHOME inidicator if it is owner's first home. WEIGHT is a weighting variable used for estimates and calculations.`TENURE` indicates ownership. 
+
+Looking at the summary statistics table, what stands out immediately are the negative min indicator values. These values are set where indicator variables are not applicable/available. This is also dragging the mean and the spread of the numeric variables. Investigating the dataset and reading the codebook, I filtered only values with INTSTATUS 1, households that occupy a housing unit. After then, the new summary statistics looks better and more telling. Age is well distirbuted and follows a curve. Despite this income still looks very right skewed, there are some poeple with really high incomes which can pose an issue later on with the regression.
+
+
+```{r clean data}
+# Select variables and clean
+household_clean <- household %>% 
+  select(INTSTATUS, CONTROL, DIVISION, FIRSTHOME, WEIGHT, HHAGE, HHRACE, HHMOVE, TENURE, HINCP, HHGRAD) 
+
+# help from https://statisticsglobe.com/loop-through-data-frame-columns-rows-in-r/
+for (i in 1:ncol(household_clean)) {
+  household_clean[,i] = as.numeric(str_remove_all(household_clean[,i], "'"))
+}
+
+# Summary Statistics of Household Dataset
+datasummary_skim(household_clean)
+
+household_clean <- household_clean %>% 
+  filter(INTSTATUS==1)
+
+datasummary_skim(household_clean)
+
+```
+# Visualizations
+I created visualizations that can aid in understanding what household housing tenure looks like across different factors.
+```{r overview by division}
+# Overview of US Housing by Tenure by Census Division 
+housing_tenure <- household_clean %>% 
+  mutate(DIVISION = as.character(DIVISION)) %>% 
+  group_by(DIVISION, TENURE) %>% 
+  summarise(total_ind = sum(WEIGHT)) %>% 
+  group_by(DIVISION) %>% 
+  mutate(div_total = sum(total_ind),
+         div_share = total_ind/div_total) %>% 
+  filter(TENURE==1)
+
+# Merge census divisions shape data
+map_housing_tenure <- division %>% 
+  left_join(housing_tenure, by = c("GEOID" = "DIVISION"))
+
+tm_shape(state) + tm_borders() +
+  tm_layout(title = "Share of Homeowners by Census Divsion", 
+            legend.position = c("LEFT", "center")) +
+  tm_shape(map_housing_tenure) + tm_fill("div_share") + tm_text("NAME", size = 0.7) +
+  tm_shape(state) + tm_borders() 
+```
+
+Midwestern region (west North Central and East North Central) has very high rates of homeowners and this wanes out as going outwards. Coastal areas have lower incidences of homeownership. This is probably because of the existence of more larger metropolitan cities and hotter housing markets. Costs of living could also be taken into account. Maybe also age differences. Younger people tend to live in bigger cities and rent homes as opposed to owning one.
+
+```{r plot by race}
+# Housing Tenure by Race
+housing_tenure_race <- household_clean %>%
+  filter(TENURE>0) %>%
+  mutate(race_name = case_when(HHRACE == 1 ~"White",
+                               HHRACE == 2 ~"Black",
+                               HHRACE == 3 ~"Native American",
+                               HHRACE == 4 ~"Asian",
+                               HHRACE == 5 ~"Hawaiian/Pacific Islander",
+                               HHRACE >= 6 ~"Multiracial")) %>% 
+  group_by(race_name, TENURE) %>%
+  summarise(total_hh = sum(WEIGHT)) %>%
+  group_by(race_name) %>%
+  mutate(race_total = sum(total_hh),
+         race_share = total_hh/race_total)
+
+# Race Bar plot
+ggplot(housing_tenure_race, aes(x=race_name, y=race_share, fill = as.factor(TENURE))) +
+
+  geom_col(position='dodge', stat='identity') +
+  
+  theme_minimal() +
+  
+  scale_y_continuous(labels = label_number(suffix = " %", scale = 100)) +
+  
+  scale_x_discrete(guide = guide_axis(n.dodge = 2)) +
+  
+  scale_fill_discrete(labels=c('Owner', 'Renter', 'Occupied w/o Rent')) +
+  
+  labs(title = "Housing Tenure by Race",
+       x = "Census Division",
+       y = "% of Individuals in Group",
+       fill = "Tenure") +
+  
+  theme_minimal()
+
+```
+
+There is a clear disparity between homeownership rates within each racial group. Black and Hawaiian/Pacific Islanders have a larger renter share than homeowner vs all other groups. This is particualrly concerning as there could be some significant systematic barriers that affect these numbers.
+
+```{r plot by age}
+# Housing Tenure By Age Bracket
+housing_tenure_age <- household_clean %>% 
+  filter(TENURE>0) %>%
+  mutate(age_bracket= case_when(HHAGE < 25~"25 below",
+                                HHAGE >= 25 & HHAGE <= 29~"25 to 29 years old",
+                                HHAGE >= 30 & HHAGE <= 34~"30 to 34 years old",
+                                HHAGE >= 35 & HHAGE <= 44~"35 to 44 years old",
+                                HHAGE >= 45 & HHAGE <= 54~"45 to 54 years old",
+                                HHAGE >= 55 & HHAGE <= 64~"55 to 64 years old",
+                                HHAGE >= 65 & HHAGE <= 74~"65 to 74 years old",
+                                HHAGE >= 75 ~ "75 and over")) %>% 
+  group_by(age_bracket, TENURE) %>%
+  summarise(total_hh = sum(WEIGHT)) %>%
+  group_by(age_bracket) %>%
+  mutate(age_bracket_total = sum(total_hh),
+         age_bracket_share = total_hh/age_bracket_total)
+
+# Age Bracket Bar plot
+ggplot(housing_tenure_age, aes(x=age_bracket, y=age_bracket_share, fill = as.factor(TENURE))) +
+
+  geom_col(position='dodge', stat='identity') +
+  
+  theme_minimal() +
+  
+  scale_y_continuous(labels = label_number(suffix = " %", scale = 100)) +
+  
+  scale_x_discrete(guide = guide_axis(n.dodge = 2)) +
+  
+  scale_fill_discrete(labels=c('Owner', 'Renter', 'Occupied w/o Rent')) +
+  
+  labs(title = "Housing Tenure by Age",
+       x = "Census Division",
+       y = "% of Individuals in Group",
+       fill = "Tenure") +
+  
+  theme_minimal()
+
+```
+There is a clear positive relationship between homeownership and age. As age increases a larger share of the population owns homes. This makes sense as older people have had more time/chances of owning a home over time. If I had more time to do the project, I would have broken this down further to posibbly control for the time bias, maybe calculating age when they moved in instead of their current age. That would have other implications however and won't exactly work in my regression.
+```{r plot by income}
+# Housing Tenure By INcome Bracket
+housing_tenure_income <- household_clean %>% 
+  filter(TENURE>0) %>%
+  mutate(income_bracket= case_when(HINCP < 5000~"$5k below",
+                                HINCP >= 5000 & HINCP <= 9999~"$5k-$9999",
+                                HINCP >= 10000 & HINCP <= 14999~"$10k-$14999",
+                                HINCP >= 15000 & HINCP <= 19999~"$15k-$19999",
+                                HINCP >= 20000 & HINCP <= 24999~"$20k-$24999",
+                                HINCP >= 25000 & HINCP <= 29999~"$25k-$29999",
+                                HINCP >= 30000 & HINCP <= 34999~"$30k-$34999",
+                                HINCP >= 40000 & HINCP <= 49999~"$40k-$49999",
+                                HINCP >= 50000 & HINCP <= 59999~"$50k-$59999",
+                                HINCP >= 60000 & HINCP <= 79999~"$60k-$79999",
+                                HINCP >= 80000 & HINCP <= 99999~"$80k-$99999",
+                                HINCP >= 100000 & HINCP <= 119999~"$100k-$119999",
+                                HINCP >= 120000 ~ "$120k over")) %>% 
+  group_by(income_bracket, TENURE) %>%
+  summarise(total_hh = sum(WEIGHT), HINCP) %>%
+  group_by(income_bracket) %>%
+  mutate(income_bracket_total = sum(total_hh),
+         income_bracket_share = total_hh/income_bracket_total)
+
+ggplot(household_clean, aes(x=HINCP, fill = TENURE))+
+  geom_histogram(binwidth = 10000)
+
+# Age Bracket Bar plot
+ggplot(housing_tenure_income, aes(x=income_bracket, y=income_bracket_share, fill = as.factor(TENURE))) +
+
+  geom_col(position='dodge', stat='identity') +
+  
+  theme_minimal() +
+  
+  scale_y_continuous(labels = label_number(suffix = " %", scale = 1e^03)) +
+  
+  scale_x_discrete(guide = guide_axis(n.dodge = 4)) +
+  
+  scale_fill_discrete(labels=c('Owner', 'Renter', 'Occupied w/o Rent')) +
+  
+  labs(title = "Housing Tenure by Income",
+       x = "Census Division",
+       y = "% of Individuals in Group",
+       fill = "Tenure") +
+  
+  theme_minimal()
+```
+
+```{r map first home}
+# Share of first time homeowners (INTSTATUS 1 and TENURE 1)
+total_homeowner <- housing_tenure %>% 
+  filter(TENURE==1) %>% 
+  group_by(DIVISION) %>% 
+  summarise(total_ind)
+
+first_home <- household_clean %>% 
+  mutate(DIVISION = as.character(DIVISION)) %>% 
+  filter(TENURE == 1 & FIRSTHOME == 1) %>% 
+  group_by(DIVISION) %>% 
+  summarise(first_home_total = sum(WEIGHT)) %>% 
+  left_join(total_homeowner, by = "DIVISION") %>% 
+  mutate(share_firstHome = first_home_total/total_ind) 
+
+# Merge census divisions shape data with first_ho_count
+map_first_home <- division %>% 
+  left_join(first_home, by = c("GEOID" = "DIVISION"))
+
+tm_shape(state) + tm_borders() +
+  tm_layout(title = "Share of Homeowners by Census Divsion", 
+            legend.position = c("LEFT", "center")) +
+  tm_shape(map_first_home) + tm_fill("share_firstHome") + tm_text("NAME", size = 0.5) +
+  tm_shape(state) + tm_borders() 
+
+```
+
+This was my initial visualization shared in class. The South and Northeast have the highest share of First Time Homeowners. I wasn't able to explore further, but breaking this down even more by recent homeowner would also be useful to understading the geographical realtionships and possibly market-value relationships.
+
+I initially wanted to do a regression and explore different finance-related relatiosnhips to first time homeownership. This did not work out since any data to estimate debt is only avaialble  on homeowners and not on renter and other tenures.
+
+```{r regress}
+# Some cleaning for regression
+household_reg <- household_clean %>% 
+  filter(INTSTATUS==1) %>% 
+  # Create indicator variables for homeowner, race, higher ed attainment
+  mutate(homeowner = ifelse(TENURE==1, 1, 0),
+         black = ifelse(HHRACE == 2 ,1,0),
+         native = ifelse(HHRACE==3, 1, 0),
+         asian = ifelse(HHRACE==4, 1, 0),
+         haw_pacific = ifelse(HHRACE==4, 1, 0),
+         multiracial = ifelse(HHRACE>=6, 1, 0),
+         race = ifelse(HHRACE >=6, 6, HHRACE),
+         higher_ed = ifelse(HHGRAD>=44, 1, 0),
+         tenure = ifelse(TENURE==1, 1, 0))
+
+# Homeownership count by income
+inc_homeowner_count <- household_reg %>%
+  mutate(DIVISION = as.character(DIVISION)) %>%
+  filter(TENURE>0) %>%
+  group_by(HINCP, tenure) %>% 
+  summarise(total_tenure=n()) %>% 
+  mutate(tenure_1 = ifelse(tenure==1,total_tenure,0),
+         tenure_0 = ifelse(tenure==0,total_tenure,0)) %>% 
+  group_by(HINCP) %>% 
+  summarise(tenure_1= sum(tenure_1), 
+            tenure_0 = sum(tenure_0),
+            total = tenure_1+tenure_0) %>% 
+  mutate(logit_own=log(tenure_1/tenure_0)) %>% 
+  filter(is.finite(logit_own)) 
+
+# Looking at relationship between income and odds of owning a home
+ggplot(inc_homeowner_count, aes(x=HINCP, y=logit_own)) + geom_point() + 
+  labs(title = "Odds of Owning a Home vs Income")
+
+ggplot(inc_homeowner_count, aes(x=log(HINCP), y=logit_own)) + geom_point() +
+  labs(title = "Odds of Owning a Home vs Log(Income)")
+
+
+# Log Income Model
+log_household <- household_reg %>% 
+  mutate(log_income = log(HINCP)) %>% 
+  filter(is.finite(log_income))
+
+model1<- glm(tenure~log_income+black+haw_pacific+HHAGE+higher_ed, data = log_household, family = "binomial")
+
+```
+
+# Regression Results
+I used a logistic regression to predict the probability of owning a home based on income while controlling for race, age, education, and geographic division. 
+
+Prior to regressing I first plotted a logit plot of income vs odds of homeownership to see if income is an appropriate predictor. Using the nominal income, it shows that there is a curved relationship. To fix this, I transformed income to log(income) and replotted. The second odds of homeownership vs log(income) plot shows linearity. 
+
+From the results table above, a 1 percent increase in income is associated with a statistically significant odds increase by a factor of e^(0.7539/100) = 1.0076 (see below), controlling for age, race (black and hawaiian pacific islander), higher educational attainment, and geographic division. This means that for every 1% increase in income, chances of owning a home increases by 0.7 %. Say someone's income increases by half (50% increase), they are more 35% more likely to own a home.
+
+Looking at the control variables, starting with race, the income effect on Black households is greater. A 1% increase in income for a Black household results in a 0.467 greater odds factor increase i.e. odds of homeownership increases by 1.47 holding all else equal. Meanwhile for Hawaiian/Pacific Isalnders the difference is larger at 1.448, odds of homeownership increases by a factor of 2.456.
+
+The main concern I have on this regression is the possible presence of multicollinearity especially on education. Educational attainment tends to be correlated with income. If that's the case, then these estimates cannot be extended beyond the sample. Apart from this, there is also omitted varibale bias. One particular variable I could think of is debt. It also important to note that since this is survey data, these estimates might not be accurate as these were not weighted. Weighting the regression should happen, but I don't know how to do that.
+
+```{r}
+exp(0.7539/100)
+exp(-0.7613)
+exp(0.3702)
+```
+
+# Conclusion 
+My exploration of this dataset would have been more helpful if I had a deeper understanding of homeownership itself. My chosen analysis and variables were only ones I intuitively knew. I would have loved to do a deep dive and spend more time cleaning my dataset to create the appropriate variables. As mneitoned in the previous section, having even more household finance data and control variables would possibly stem better estimates.
+
+There are over a thousand different variables to explore on and a few hundred of those are just household characteristics. For example, as I was making the map on first time homeownership, I realzed that this data could span an analysis on the group make-up to behaviors comaprisons with experienced homeowners. With more understanding of regression methods and curiousity towards the subject area, working data like this could create some really profound estimates and analyses.
+
